@@ -15,7 +15,13 @@
 #define SERVER_PORT 8080
 #define BUFFER_SIZE 1024
 #define MAX_THREADS 10
-#define FILE_SAVE_PATH "Recibidos/"
+#define FILE_SAVE_PATH "recibidos/"
+
+/*
+Como correr el cliente
+gcc -o cliente cliente.c -pthread
+./cliente
+*/
 
 void* request_file(void* arg) {
     char* filename = (char*)arg;
@@ -49,7 +55,7 @@ void* request_file(void* arg) {
     int64_t filesize;
     int bytes_read = recv(sock, &filesize, sizeof(filesize), 0);
     if (bytes_read <= 0 || filesize <= 0) {
-        printf("El archivo '%s' no existe o hubo un error.\n", filename);
+        printf("\nEl archivo '%s' no existe o hubo un error.\n", filename);
         close(sock);
         pthread_exit(NULL);
     }
@@ -71,7 +77,7 @@ void* request_file(void* arg) {
         pthread_exit(NULL);
     }
 
-    printf("Descargando '%s' (%.2f KB)...\n", filename, filesize / 1024.0);
+    printf("\nDescargando '%s' (%.2f KB)...\n", filename, filesize / 1024.0);
 
     int64_t total_received = 0;
     int percent = 0, last_percent = -1;
