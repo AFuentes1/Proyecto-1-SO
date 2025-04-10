@@ -15,7 +15,7 @@
 #define SERVER_PORT 8080
 #define BUFFER_SIZE 1024
 #define MAX_THREADS 10
-#define FILE_SAVE_PATH "/home/valeska/Documentos/Proyecto-1-SO/Recibidos/"
+#define FILE_SAVE_PATH "Recibidos/"
 
 void* request_file(void* arg) {
     char* filename = (char*)arg;
