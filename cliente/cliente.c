@@ -23,106 +23,92 @@ gcc -o cliente cliente.c -pthread
 ./cliente
 */
 
-void* request_file(void* arg) {
-    char* filename = (char*)arg;
-    int sock;
+// Función que realiza la descarga de un archivo desde el servidor
+void *client_thread(void *arg) {
+    char *file_name = (char *)arg;
+    int client_socket;
     struct sockaddr_in server_addr;
     char buffer[BUFFER_SIZE];
-    FILE* file;
-    char filepath[256];
+    char output_path[256];
+    int bytes_received;
+    FILE *output_file;
+    int header_parsed = 0;
 
     // Crear socket
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    client_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (client_socket < 0) {
         perror("Socket");
         pthread_exit(NULL);
     }
 
+    // Configurar dirección del servidor
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
     inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr);
 
-    // Conectar con servidor
-    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        perror("Connect");
-        close(sock);
+    // Conectar con el servidor
+    if (connect(client_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Conexión");
+        close(client_socket);
         pthread_exit(NULL);
     }
 
-    // Enviar nombre del archivo
-    send(sock, filename, strlen(filename), 0);
+    // Enviar solicitud HTTP compatible con el servidor
+    char request[300];
+    snprintf(request, sizeof(request), "GET /%s HTTP/1.0\r\n\r\n", file_name);
+    send(client_socket, request, strlen(request), 0);
 
-    // Leer tamaño del archivo (debe ser enviado como un entero de 8 bytes por el servidor)
-    int64_t filesize;
-    int bytes_read = recv(sock, &filesize, sizeof(filesize), 0);
-    if (bytes_read <= 0 || filesize <= 0) {
-        printf("\nEl archivo '%s' no existe o hubo un error.\n", filename);
-        close(sock);
+    // Preparar archivo de salida
+    snprintf(output_path, sizeof(output_path), "descargado_%s", file_name);
+    output_file = fopen(output_path, "wb");
+    if (output_file == NULL) {
+        perror("Archivo de salida");
+        close(client_socket);
         pthread_exit(NULL);
     }
 
-    // Crear la ruta completa donde se guardará el archivo
-    snprintf(filepath, sizeof(filepath), "%s%s", FILE_SAVE_PATH, filename);
-    
-    // Crear carpeta de destino si no existe
-    struct stat st = {0};
-    if (stat(FILE_SAVE_PATH, &st) == -1) {
-        mkdir(FILE_SAVE_PATH, 0700);
-    }
-
-    // Crear archivo para guardar el contenido recibido
-    file = fopen(filepath, "wb");
-    if (!file) {
-        perror("File");
-        close(sock);
-        pthread_exit(NULL);
-    }
-
-    printf("\nDescargando '%s' (%.2f KB)...\n", filename, filesize / 1024.0);
-
-    int64_t total_received = 0;
-    int percent = 0, last_percent = -1;
-    int bytes;
-
-    // Recibir datos del servidor
-    while ((bytes = recv(sock, buffer, BUFFER_SIZE, 0)) > 0) {
-        fwrite(buffer, 1, bytes, file);
-        total_received += bytes;
-
-        percent = (int)((total_received * 100) / filesize);
-        if (percent != last_percent) {
-            printf("\rProgreso [%3d%%]", percent);
-            fflush(stdout);
-            last_percent = percent;
+    // Recibir datos y escribirlos en el archivo, omitiendo cabecera HTTP si existe
+    while ((bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0)) > 0) {
+        if (!header_parsed) {
+            char *body = strstr(buffer, "\r\n\r\n");
+            if (body != NULL) {
+                body += 4; // Saltar la cabecera HTTP
+                fwrite(body, 1, bytes_received - (body - buffer), output_file);
+                header_parsed = 1;
+            } else {
+                continue;
+            }
+        } else {
+            fwrite(buffer, 1, bytes_received, output_file);
         }
     }
 
-    printf("\nArchivo '%s' recibido completamente.\n", filename);
-    fclose(file);
-    close(sock);
+    fclose(output_file);
+    close(client_socket);
+    printf("Archivo '%s' descargado con éxito.\n", output_path);
     pthread_exit(NULL);
 }
 
 int main() {
-    char input[256];
-    printf("Ingrese el/los nombre/s del/los archivo/s (separados por comas): ");
+    char input[512];
+    printf("Ingrese el/los nombre(s) de archivo(s) a solicitar (separados por comas): ");
     fgets(input, sizeof(input), stdin);
-
-    // Quitar salto de línea
     input[strcspn(input, "\n")] = '\0';
 
-    // Separar por comas
-    char* token = strtok(input, ",");
-    pthread_t threads[MAX_THREADS];
-    int count = 0;
+    char *token = strtok(input, ",");
+    pthread_t threads[20];
+    int i = 0;
 
-    while (token && count < MAX_THREADS) {
-        char* filename = strdup(token);
-        pthread_create(&threads[count++], NULL, request_file, filename);
+    // Crear un hilo por archivo solicitado
+    while (token != NULL && i < 20) {
+        char *file = strdup(token);
+        pthread_create(&threads[i], NULL, client_thread, file);
         token = strtok(NULL, ",");
+        i++;
     }
 
-    for (int i = 0; i < count; i++) {
-        pthread_join(threads[i], NULL);
+    for (int j = 0; j < i; j++) {
+        pthread_join(threads[j], NULL);
     }
 
     return 0;
