@@ -15,7 +15,7 @@
 
 /* 
 Como correr el servidor
-gcc -o server-fifo server-fifo.c
+gcc -o server-fifo server-fifo.c common/utils.c
 ./server-fifo
 
 */
