@@ -3,78 +3,76 @@
 #include <string.h>
 #include <unistd.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
 #include <stdint.h>
-#include "common/utils.h"
 
 #define SERVER_PORT 8080
 #define BUFFER_SIZE 1024
-#define FILES_DIR "../archivos/" //ruta donde estan los archivos
 
-/* 
-Como correr el servidor
-gcc -o server-fork server-fork.c
-./server-fork
-
-*/
-
-/*
-Ejemplo de como correrlo en browser
-http://127.0.0.1:8080/imagen.jpg
-*/
-
-const char* get_mime_type(const char* filename);
-
-void handle_custom_client(int client_socket, char* initial_data, int initial_size);
-
-void handle_browser_request(int client_socket, char* initial_data);
-
-void client_handler(int client_fd) {
+void client_handler(int client_socket) {
     char buffer[BUFFER_SIZE];
+    int bytes_received;
+
+    // Recibir nombre del archivo
+    bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+    
+    if (bytes_received <= 0) {
+        perror("Error al recibir el nombre del archivo");
+        close(client_socket);
+        return;
+    }
+    buffer[bytes_received] = '\0'; // Asegurarse de que el buffer esté terminado
+
     char filename[256];
 
-    int bytes = recv(client_fd, buffer, BUFFER_SIZE - 1, 0);
-    if (bytes <= 0) {
-        perror("Error al recibir datos del cliente");
-        close(client_fd);
-        return;
-    }
-    buffer[bytes] = '\0';
-
-    // Determinar si la solicitud es HTTP (desde browser) o directa (cliente propio)
+    // Detectar si la solicitud es HTTP o texto plano
     if (strncmp(buffer, "GET ", 4) == 0) {
+        // Extraer desde solicitud tipo: "GET /archivo.ext HTTP/1.0"
         sscanf(buffer, "GET /%s", filename);
+        
+        // Limpiar el " HTTP/1.0" si está incluido al final
         char *espacio = strchr(filename, ' ');
         if (espacio != NULL) *espacio = '\0';
-        printf("[Hijo] Solicitud HTTP recibida: %s\n", filename);
+        
+        printf("Solicitud HTTP detectada. Archivo solicitado: %s\n", filename);
     } else {
+        // Solicitud simple: solo viene el nombre del archivo
         strncpy(filename, buffer, sizeof(filename));
-        filename[sizeof(filename) - 1] = '\0';
-        printf("[Hijo] Solicitud directa recibida: %s\n", filename);
+        filename[sizeof(filename)-1] = '\0'; // aseguramos terminación
+        printf("Solicitud directa detectada. Archivo solicitado: %s\n", filename);
     }
 
-    FILE *archivo = fopen(filename, "rb");
-    if (archivo == NULL) {
-        char *msg = "HTTP/1.0 404 Not Found\r\nContent-Type: text/plain\r\n\r\nArchivo no encontrado.\n";
-        send(client_fd, msg, strlen(msg), 0);
-        close(client_fd);
+    // Abrir el archivo
+    char ruta_archivo[300];
+    snprintf(ruta_archivo, sizeof(ruta_archivo), "archivos/%s", filename);
+    FILE *file = fopen(ruta_archivo, "rb");
+
+    if (!file) {
+        // Enviar filesize = -1 para indicar error
+        int64_t error = -1;
+        send(client_socket, &error, sizeof(error), 0);
+        perror("Archivo no encontrado");
         return;
     }
 
-    // Enviar header HTTP 
-    char header[] = "HTTP/1.0 200 OK\r\nContent-Type: application/octet-stream\r\n\r\n";
-    send(client_fd, header, strlen(header), 0);
+    // Obtener tamaño del archivo
+    fseek(file, 0, SEEK_END);
+    int64_t filesize = ftell(file);
+    rewind(file);
 
-    // Enviar el archivo en bloques
-    while ((bytes = fread(buffer, 1, BUFFER_SIZE, archivo)) > 0) {
-        send(client_fd, buffer, bytes, 0);
+    // Enviar tamaño del archivo
+    send(client_socket, &filesize, sizeof(filesize), 0);
+
+    // Enviar contenido del archivo
+    int bytes;
+    while ((bytes = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
+        send(client_socket, buffer, bytes, 0);
     }
 
-    fclose(archivo);
-    close(client_fd);
-    printf("[Hijo] Transferencia finalizada y conexión cerrada.\n");
+    fclose(file);
+    printf("Archivo '%s' enviado exitosamente.\n", filename);
 }
 
 int main() {
@@ -104,7 +102,7 @@ int main() {
         exit(1);
     }
 
-    printf("Servidor fork escuchando en puerto %d...\n", SERVER_PORT);
+    printf("Servidor FORK listo en puerto %d...\n", SERVER_PORT);
 
     while (1) {
         client_socket = accept(server_fd, (struct sockaddr *)&client_addr, &client_size);
@@ -116,25 +114,18 @@ int main() {
 
         pid_t pid = fork();
 
-        if (pid < 0) {
+        if (pid == 0) {
+            // Proceso hijo
+            close(server_fd);
+            client_handler(client_socket);
+            close(client_socket);
+            exit(0);
+        } else if (pid > 0) {
+            // Proceso padre
+            close(client_socket);
+        } else {
             perror("Error al hacer fork");
             close(client_socket);
-            continue;
-        }
-
-        if (pid == 0) {
-            // PROCESO HIJO
-            close(server_fd); // El hijo no necesita el socket del servidor
-
-            // Manejo del cliente
-            client_handler(client_socket);
-
-            close(client_socket); // Cierra el socket del cliente
-            exit(0);              // Termina el proceso hijo
-
-        } else {
-            // PROCESO PADRE
-            close(client_socket); // El padre no necesita este socket
         }
     }
 
