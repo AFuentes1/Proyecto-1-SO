@@ -15,57 +15,85 @@ void client_handler(int client_socket) {
     char buffer[BUFFER_SIZE];
     int bytes_received;
 
-    // Recibir nombre del archivo
+    // Recibir la solicitud
     bytes_received = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
-    
     if (bytes_received <= 0) {
-        perror("Error al recibir el nombre del archivo");
+        perror("Error al recibir la solicitud");
         close(client_socket);
         return;
     }
-    buffer[bytes_received] = '\0'; // Asegurarse de que el buffer esté terminado
+    buffer[bytes_received] = '\0';
 
     char filename[256];
+    int es_http = 0;
 
-    // Detectar si la solicitud es HTTP o texto plano
+    // Detectar si es una solicitud HTTP
     if (strncmp(buffer, "GET ", 4) == 0) {
-        // Extraer desde solicitud tipo: "GET /archivo.ext HTTP/1.0"
+        es_http = 1;
         sscanf(buffer, "GET /%s", filename);
-        
-        // Limpiar el " HTTP/1.0" si está incluido al final
+
+        // Limpiar " HTTP/1.1" del final si existe
         char *espacio = strchr(filename, ' ');
         if (espacio != NULL) *espacio = '\0';
-        
+
         printf("Solicitud HTTP detectada. Archivo solicitado: %s\n", filename);
     } else {
-        // Solicitud simple: solo viene el nombre del archivo
         strncpy(filename, buffer, sizeof(filename));
-        filename[sizeof(filename)-1] = '\0'; // aseguramos terminación
+        filename[sizeof(filename)-1] = '\0';
         printf("Solicitud directa detectada. Archivo solicitado: %s\n", filename);
     }
 
-    // Abrir el archivo
+    // Construir ruta al archivo
     char ruta_archivo[300];
     snprintf(ruta_archivo, sizeof(ruta_archivo), "archivos/%s", filename);
     FILE *file = fopen(ruta_archivo, "rb");
 
     if (!file) {
-        // Enviar filesize = -1 para indicar error
-        int64_t error = -1;
-        send(client_socket, &error, sizeof(error), 0);
+        if (es_http) {
+            char *not_found = "HTTP/1.1 404 Not Found\r\n"
+                              "Content-Type: text/plain\r\n"
+                              "Connection: close\r\n\r\n"
+                              "Archivo no encontrado.\n";
+            send(client_socket, not_found, strlen(not_found), 0);
+        } else {
+            int64_t error = -1;
+            send(client_socket, &error, sizeof(error), 0);
+        }
         perror("Archivo no encontrado");
         return;
     }
 
-    // Obtener tamaño del archivo
-    fseek(file, 0, SEEK_END);
-    int64_t filesize = ftell(file);
-    rewind(file);
+    // Si es HTTP, enviar cabecera HTTP adecuada
+    if (es_http) {
+        char header[BUFFER_SIZE];
+        char *extension = strrchr(filename, '.');
+        const char *mime = "application/octet-stream";
 
-    // Enviar tamaño del archivo
-    send(client_socket, &filesize, sizeof(filesize), 0);
+        if (extension) {
+            if (strcmp(extension, ".jpg") == 0 || strcmp(extension, ".jpeg") == 0)
+                mime = "image/jpeg";
+            else if (strcmp(extension, ".png") == 0)
+                mime = "image/png";
+            else if (strcmp(extension, ".html") == 0)
+                mime = "text/html";
+        }
 
-    // Enviar contenido del archivo
+        snprintf(header, sizeof(header),
+                 "HTTP/1.1 200 OK\r\n"
+                 "Content-Type: %s\r\n"
+                 "Content-Disposition: inline; filename=\"%s\"\r\n"
+                 "Connection: close\r\n\r\n", mime, filename);
+
+        send(client_socket, header, strlen(header), 0);
+    } else {
+        // Obtener tamaño del archivo y enviarlo al cliente personalizado
+        fseek(file, 0, SEEK_END);
+        int64_t filesize = ftell(file);
+        rewind(file);
+        send(client_socket, &filesize, sizeof(filesize), 0);
+    }
+
+    // Enviar el contenido del archivo
     int bytes;
     while ((bytes = fread(buffer, 1, BUFFER_SIZE, file)) > 0) {
         send(client_socket, buffer, bytes, 0);
@@ -115,13 +143,11 @@ int main() {
         pid_t pid = fork();
 
         if (pid == 0) {
-            // Proceso hijo
             close(server_fd);
             client_handler(client_socket);
             close(client_socket);
             exit(0);
         } else if (pid > 0) {
-            // Proceso padre
             close(client_socket);
         } else {
             perror("Error al hacer fork");
@@ -132,3 +158,4 @@ int main() {
     close(server_fd);
     return 0;
 }
+
