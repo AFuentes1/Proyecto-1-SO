@@ -11,7 +11,6 @@
 
 #define SERVER_PORT 8080
 #define BUFFER_SIZE 1024
-#define FILES_DIR "../archivos/" //ruta donde estan los archivos
 
 /* 
 Como correr el servidor
